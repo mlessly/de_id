@@ -7,11 +7,13 @@
 
 # <codecell>
 
-from de_id_functions import *
-import numpy as np
-import pylab as P
-import pandas as pd
 from decimal import *
+
+import numpy as np
+import pandas as pd
+
+from de_id_functions import *
+
 
 # <headingcell level=4>
 
@@ -512,7 +514,7 @@ uMatrix - preUmatrix
 
 # <codecell>
 
- courseDrops = userKanon2(c, table, userVar, courseVar, k)
+courseDrops = userKanon2(c, table, userVar, courseVar, k)
 
 # <codecell>
 

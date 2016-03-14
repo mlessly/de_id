@@ -19,31 +19,55 @@
 #       
 ##################################
 
+from __future__ import unicode_literals
 
+import cPickle
 import csv
 import datetime
 import hashlib
+import itertools
+import math
 import os
 import random
 import sqlite3
 import string
 
-import cPickle
-import itertools
-import math
 import pycountry
+
+from csv2sqlite import convert
 
 
 ########################
 # Simple SQL commands as functions
 #######################
 
-def addColumn(cursor, tableName, varName):
-    cursor.execute("ALTER TABLE " + tableName + " ADD COLUMN " + varName + " text")
+
+def add_column(cursor, table_name, column_name):
+    """ Adds a TEXT column to a database table.
+
+    Arguments:
+        cursor (sqlite3.Cursor) -- Database cursor
+        table_name (str) -- Name of table to modify
+        column_name (str) -- Name of column to add
+    """
+    cursor.execute("ALTER TABLE {table_name} ADD COLUMN {column_name} text".format(
+        table_name=table_name, column_name=column_name))
 
 
-def selUnique(cursor, tableName, varName):
-    cursor.execute("SELECT " + varName + ", SUM(Count) FROM " + tableName + " GROUP BY " + varName)
+def count_unique_values(cursor, table_name, column_name):
+    """ Returns the unique values, and their counts, for a column in the specified table.
+
+    Arguments:
+        cursor (sqlite3.Cursor) -- Database cursor
+        table_name (str) -- Name of table to query
+        column_name (str) -- Name of column to query
+
+    Returns:
+        List of tuples. First value element contains the unique value; second element contains the number of rows
+        with that value.
+    """
+    cursor.execute("SELECT {column_name}, COUNT(*) FROM {table_name} GROUP BY {column_name}".format(
+        table_name=table_name, column_name=column_name))
     return cursor.fetchall()
 
 
@@ -51,13 +75,16 @@ def simpleUpdate(cursor, tableName, varName, value):
     cursor.execute("UPDATE " + tableName + " SET " + varName + " = '" + value + "'")
 
 
-def varIndex(cursor, tableName, varName):
+def index_column(cursor, table_name, column_name):
+    """ Adds a TEXT column to a database table.
+
+    Arguments:
+        cursor (sqlite3.Cursor) -- Database cursor
+        table_name (str) -- Name of table to modify
+        column_name (str) -- Name of column to index
     """
-    cursor: sqlite3 cursor object
-    tableName: string, name of table where variable lives
-    varName: string, name of variable to index
-    """
-    cursor.execute("CREATE INDEX " + varName + "_idx ON " + tableName + "(" + varName + ")")
+    cursor.execute("CREATE INDEX {column_name}_idx ON {table_name} ({column_name})".format(
+        table_name=table_name, column_name=column_name))
 
 
 def dbOpen(db):
@@ -84,44 +111,23 @@ def dbClose(cursor, closeFlag=True):
 # Functions that need to be done for a new dataset, but not thereafter
 #################
 
-def sourceLoad(cursor, fname, tableName):
+def sourceLoad(cursor, file_path, table_name):
     """
-    cursor: sqlite3 cursor object
-    fname: string, file name/path for loading, .csv format
-    takes a .csv file and reads it into a sqlite database defined by the 
-    cursor object. 
-    CAUTION: will DELETE any existing table with same name
+    Loads data from specified file into a table in the database.
+
+    WARNING: If the table already exists in the database, it will be dropped and re-created.
+
+    Arguments:
+        cursor (sqlite3.Cursor) -- SQLite3 database cursor
+        file_path (str) -- Path to the CSV file containing the data
+        table_name (str) -- Name of the table where the data should be stored
+
+    Returns:
+        None
     """
-    try:
-        cursor.execute("DROP TABLE " + tableName)
-    except:
-        pass
-    with open(fname, "r") as inFile:
-        csvIn = csv.reader(inFile)
-        headerFlag = False
-        for row in csvIn:
-            if not (headerFlag):
-                headers = row
-                tableCreate = "CREATE TABLE " + tableName + " ("
-                tableInsert = "INSERT INTO " + tableName + " VALUES ("
-                for col in headers[:-1]:
-                    tableCreate += col + " text, "
-                    tableInsert += "?,"
-                tableCreate += headers[-1] + " text, kkey text)"
-                tableInsert += "?, ?)"
-                cursor.execute(tableCreate)
-                # varList = qiPicker(cursor, tableName)
-                headerFlag = True
-            else:
-                row = tuple(row)
-                lastVar = ""
-                # for i in varList:
-                #    lastVar += row[int(i[0])]
-                row += (lastVar,)
-                cursor.execute(tableInsert, tuple(row))
-    cursor.execute("ALTER TABLE " + tableName + " ADD COLUMN Count integer")
-    cursor.execute("UPDATE " + tableName + " SET Count =1")
-    # return varList
+    # Drop the existing table
+    cursor.execute("DROP TABLE IF EXISTS {}".format(table_name))
+    convert(file_path, None, table_name, cursor=cursor)
 
 
 def countryNamer(cursor, tableName, countryCode):
@@ -129,10 +135,11 @@ def countryNamer(cursor, tableName, countryCode):
     cursor: sqlite cursor object
     tableName: string, name of table
     countryCode: string, name of variable containing 2-char alpha country codes
+
     takes a variable, finds the unique instances of country codes, generates map
     to country names, then updates the country codes to country names where possible
     """
-    qry = selUnique(cursor, tableName, countryCode)
+    qry = count_unique_values(cursor, tableName, countryCode)
     cnameDict = {}
     for row in qry:
         try:
@@ -141,7 +148,7 @@ def countryNamer(cursor, tableName, countryCode):
             print "Err %s on: cc=%s" % (err, row[0])
             cnameDict[row[0]] = str(row[0])
     try:
-        addColumn(cursor, tableName, countryCode + "_cname")
+        add_column(cursor, tableName, countryCode + "_cname")
     except:
         cursor.execute("UPDATE " + tableName + " SET " + countryCode + "_cname = 'NULL'")
     dataUpdate(cursor, tableName, countryCode, cnameDict, True, countryCode + "_cname")
@@ -162,7 +169,7 @@ def contImport(cursor, tableName, inFileName, varName1, varName2='continent'):
     with open(inFileName, "r") as inFile:
         contDict = cPickle.load(inFile)
     try:
-        addColumn(cursor, tableName, varName2)
+        add_column(cursor, tableName, varName2)
     except:
         cursor.execute("UPDATE " + tableName + " SET " + varName2 + " = 'NULL'")
     dataUpdate(cursor, tableName, varName1, contDict, True, varName2)
@@ -194,15 +201,15 @@ def idGen(cursor, tableName, varName, prefix):
     length = len(cursor.fetchall())
     count = len(str(length * 10))
     try:
-        varIndex(cursor, tableName, varName)
+        index_column(cursor, tableName, varName)
     except:
         pass
     try:
         cursor.execute("DROP TABLE idhash")
     except:
         pass
-    cursor.execute("CREATE TABLE idhash (id text, hash text, newid text)")
-    ids = selUnique(cursor, tableName, varName)
+    cursor.execute("CREATE TABLE idhash (id TEXT, hash TEXT, newid TEXT)")
+    ids = count_unique_values(cursor, tableName, varName)
     print "ids: " + str(len(ids))
     counter = 1
     for row in ids:
@@ -214,8 +221,8 @@ def idGen(cursor, tableName, varName, prefix):
     hashTable = cursor.fetchall()
     counter = 1
     try:
-        addColumn(cursor, tableName, "userid_DI")
-        varIndex(cursor, tableName, "userid_DI")
+        add_column(cursor, tableName, "userid_DI")
+        index_column(cursor, tableName, "userid_DI")
     except:
         print "userid_DI column already exists, overwriting"
         cursor.execute("UPDATE " + tableName + " SET userid_DI = 'NULL'")
@@ -255,40 +262,54 @@ def contExport(cursor, tableName, varName1, varName2, outFileName):
 # functions for generalizing
 ######################
 
-def contSwap(cursor, tableName, varName1, varName2, th):
+def contSwap(cursor, table_name, country_column_name, continent_column_name, ceiling):
     """
-    cursor: sqlite cursor object
-    tableName: string, name of table
-    varName1: string, name of variable containing country names
-    varName2: string, name of variable containing continent names
-    th = int, k, minimum group size
-    creates new variable that combines the values from the 
-    continent column and the country column, inserting continents 
-    where the n in a country is lower than th
+    Combines the country and continent values for all countries with fewer rows than the ceiling value.
+
+    Arguments:
+        cursor (sqlite3.Cursor) -- Database cursor
+        table_name (str) -- Name of table containing data
+        country_column_name (str) -- Name of column containing country data
+        continent_column_name (str) -- Name of column containing continent data
+        ceiling (int) -- Minimum group size
     """
     try:
-        addColumn(cursor, tableName, varName1 + "_DI")
-        varIndex(c, tableName, varName1 + "_DI")
-    except:
-        cursor.execute("UPDATE " + tableName + " SET " + varName1 + "_DI = 'NULL'")
-    cursor.execute("SELECT " + varName1 + ", " + varName2 + ", SUM(Count) FROM " + tableName + " GROUP BY " + varName1)
-    countries = cursor.fetchall()
-    print "countries: " + str(len(countries))
-    count = 1
-    for country in countries:
-        # print count
-        count += 1
-        cname = country[0]
-        contname = country[1]
-        num = country[2]
-        if num < th or cname in ['A1', 'A2', 'AP', 'EU', '']:
+        add_column(cursor, table_name, country_column_name + "_DI")
+        index_column(cursor, table_name, country_column_name + "_DI")
+    except sqlite3.Error:
+        pass
+
+    # Default the *_DI column values to the value of the original column
+    cursor.execute("UPDATE {table_name} SET {country_column_name}_DI = {country_column_name}".format(
+        table_name=table_name,
+        country_column_name=country_column_name
+    ))
+
+    cursor.execute(
+        "SELECT {country_column_name}, {continent_column_name}, COUNT(*) "
+        "FROM {table_name} "
+        "GROUP BY {country_column_name}".format(
+            country_column_name=country_column_name,
+            continent_column_name=continent_column_name,
+            table_name=table_name))
+
+    rows = cursor.fetchall()
+    print "Table {table_name} contains {count} unique countries.".format(table_name=table_name, count=len(rows))
+
+    for row in rows:
+        country = row[0]
+        continent = row[1]
+        count = row[2]
+
+        # NOTE (CCB): This may be improved by filtering in SQL
+        if count < ceiling or country in ('A1', 'A2', 'AP', 'EU', ''):
             cursor.execute(
-                'UPDATE ' + tableName + ' SET ' + varName1 + '_DI = "' + contname + '" WHERE ' + varName1 + ' = "' + cname + '"')
-        else:
-            cursor.execute(
-                'UPDATE ' + tableName + ' SET ' + varName1 + '_DI = "' + cname + '" WHERE ' + varName1 + ' = "' + cname + '"')
-    qry = selUnique(cursor, tableName, varName1 + "_DI")
-    print "categories after swap: " + str(len(qry))
+                "UPDATE {table_name} SET {country_column_name}_DI = ? WHERE {country_column_name} = ?".format(
+                    table_name=table_name, country_column_name=country_column_name),
+                (continent, country,)
+            )
+    values = count_unique_values(cursor, table_name, "{}_DI".format(country_column_name))
+    print "Categories after country-continent swap: {}".format(len(values))
 
 
 def tailFinder(cursor, tableName, varName, catSize):
@@ -299,7 +320,7 @@ def tailFinder(cursor, tableName, varName, catSize):
     catSize: k, upper bound for category size
     only works for integers
     """
-    qry = selUnique(cursor, tableName, varName)
+    qry = count_unique_values(cursor, tableName, varName)
     itemList = {}
     keyList = []
     for i in qry:
@@ -307,7 +328,7 @@ def tailFinder(cursor, tableName, varName, catSize):
             itemList[int(i[0])] = i[1]
             keyList.append(int(i[0]))
         except:
-            print "non int value: " + i[0] + ", skipping"
+            print "Skipping non-integer value: {}".format(i[0])
     keyList.sort()
     for j in keyList:
         if itemList[j] < catSize:
@@ -329,19 +350,19 @@ def tailFinder(cursor, tableName, varName, catSize):
                 low = raw_input("Please choose from the values available: ")
                 low = int(low)
         if b == 'b' or b == 'h':
-            hi = raw_input("Choose the high tail: ")
+            high = raw_input("Choose the high tail: ")
             try:
-                hi = int(hi)
+                high = int(high)
             except:
                 "invalid value, must be int"
-            while hi not in keyList:
-                hi = raw_input("Please choose from the values available: ")
-                hi = int(hi)
+            while high not in keyList:
+                high = raw_input("Please choose from the values available: ")
+                high = int(high)
         tailMap = {}
         if b == 'b' or b == 'l':
-            print "Low tail for " + varName + ": " + str(low)
+            print "Low tail for {column_name}: {value}".format(column_name=varName, value=low)
         if b == 'b' or b == 'h':
-            print "High tail for " + varName + ": " + str(hi)
+            print "High tail for {column_name}: {value}".format(column_name=varName, value=high)
         for j in keyList:
             keyFlag = False
             if b == 'b' or b == 'l':
@@ -352,13 +373,13 @@ def tailFinder(cursor, tableName, varName, catSize):
                     tailMap[str(j)] = str(j)
                     keyFlag = True
             if b == 'b' or b == 'h':
-                if j >= hi:
-                    tailMap[str(j)] = ">= " + str(hi)
+                if j >= high:
+                    tailMap[str(j)] = ">= " + str(high)
                 elif not keyFlag:
                     tailMap[str(j)] = str(j)
         try:
-            addColumn(cursor, tableName, varName + "_DI")
-            varIndex(cursor, tableName, varName + "_DI")
+            add_column(cursor, tableName, varName + "_DI")
+            index_column(cursor, tableName, varName + "_DI")
         except:
             print "column " + varName + "_DI" + " already exists, overwriting..."
             cursor.execute("UPDATE " + tableName + " SET " + varName + "_DI = " + varName)
@@ -382,7 +403,7 @@ def numBinner(cursor, tableName, varName, bw=5):
     bw: int, bin width, default is 5
     if there are already string or unicode "bins" in the values, they will be preserved 
     """
-    qry = selUnique(cursor, tableName, varName)
+    qry = count_unique_values(cursor, tableName, varName)
     numDict = {}
     for item in qry:
         try:
@@ -412,8 +433,8 @@ def numBinner(cursor, tableName, varName, bw=5):
         choice = raw_input("Plz choose n or o: ")
     if choice == 'n':
         try:
-            addColumn(cursor, tableName, varName + "_DI")
-            varIndex(c, tableName, varName + "_DI")
+            add_column(cursor, tableName, varName + "_DI")
+            index_column(c, tableName, varName + "_DI")
         except:
             print "column " + varName + "_DI" + " already exists, overwriting..."
             cursor.execute("UPDATE " + tableName + " SET " + varName + "_DI = " + varName)
@@ -422,7 +443,7 @@ def numBinner(cursor, tableName, varName, bw=5):
         dataUpdate(cursor, tableName, varName, newNumDict)
 
 
-def dateSplit(cursor, tableName, varName):
+def dateSplit(cursor, table_name, column_name):
     """
     cursor: sqlite cursor object
     tableName: string, name of table
@@ -431,25 +452,28 @@ def dateSplit(cursor, tableName, varName):
     requires the T to denote beginning of the time
     """
     try:
-        varIndex(cursor, tableName, varName)
+        index_column(cursor, table_name, column_name)
     except:
         pass
     try:
-        addColumn(cursor, tableName, varName + "_DI")
-        varIndex(c, tableName, varName + "_DI")
+        add_column(cursor, table_name, column_name + "_DI")
+        index_column(cursor, table_name, column_name + "_DI")
     except:
-        print "column " + varName + "_DI" + " already exists, overwriting..."
-        cursor.execute("UPDATE " + tableName + " SET " + varName + "_DI = 'NULL'")
-    qry = selUnique(cursor, tableName, varName)
-    for row in qry:
-        date = row[0]
-        if 'T' in date:
+        print "Column {}_DI already exists. Overwriting!".format(column_name)
+        cursor.execute(
+            "UPDATE {table_name} SET {column_name}_DI = NULL".format(table_name=table_name, column_name=column_name))
+
+    unique_values_and_counts = count_unique_values(cursor, table_name, column_name)
+    for item in unique_values_and_counts:
+        date = item[0]
+        if date and 'T' in date:
             point = date.index('T')
             dateNew = date[:point]
         else:
             dateNew = date
         cursor.execute(
-            "UPDATE " + tableName + " SET " + varName + "_DI = '" + dateNew + "' WHERE " + varName + " = '" + date + "'")
+            "UPDATE {table_name} SET {column_name}_DI = ? WHERE {column_name} = ?".format(table_name=table_name,
+                column_name=column_name), (dateNew, date))
 
 
 #######################
@@ -467,12 +491,12 @@ def nullMarker(cursor, tableName, varList):
     """
     for var in varList:
         try:
-            varIndex(cursor, tableName, var[1])
+            index_column(cursor, tableName, var[1])
         except:
             pass
         try:
-            addColumn(cursor, tableName, var[1] + "_NF")
-            varIndex(cursor, tableName, var[1] + "_NF")
+            add_column(cursor, tableName, var[1] + "_NF")
+            index_column(cursor, tableName, var[1] + "_NF")
         except:
             simpleUpdate(cursor, tableName, var[1] + "_NF", "NULL")
         simpleUpdate(cursor, tableName, var[1] + "_NF", "1")
@@ -516,18 +540,18 @@ def iterKcheck(cursor, tableName, k, nullFlag=True):
         nullVar = var[1] + "_NF"
         nullList.append((var[0], nullVar))
     try:
-        addColumn(cursor, tableName, "nullSum")
-        varIndex(cursor, tableName, "nullSum")
+        add_column(cursor, tableName, "nullSum")
+        index_column(cursor, tableName, "nullSum")
     except:
         pass
     kkeyUpdate(cursor, tableName, nullList, "nullSum")
-    nullqry = selUnique(cursor, tableName, "nullSum")
+    nullqry = count_unique_values(cursor, tableName, "nullSum")
     # create variable that says whether it's okay for future checks
     try:
         # print "inside try, time: "
         # print datetime.datetime.now().time()
-        addColumn(cursor, tableName, "kCheckFlag")
-        varIndex(cursor, tableName, "kCheckFlag")
+        add_column(cursor, tableName, "kCheckFlag")
+        index_column(cursor, tableName, "kCheckFlag")
         simpleUpdate(cursor, tableName, "kCheckFlag", "False")
     except:
         # print "inside except, time:"
@@ -545,12 +569,12 @@ def iterKcheck(cursor, tableName, k, nullFlag=True):
         print tmpVarList
         print datetime.datetime.now().time()
         try:
-            addColumn(cursor, tableName, "nullkkey")
+            add_column(cursor, tableName, "nullkkey")
         except:
             pass
         kkeyUpdate(cursor, tableName, tmpVarList, "nullkkey")
         cursor.execute(
-            "SELECT nullkkey, SUM(Count) FROM " + tableName + " WHERE kCheckFlag = 'False' GROUP BY nullkkey")
+            "SELECT nullkkey, COUNT(*) FROM " + tableName + " WHERE kCheckFlag = 'False' GROUP BY nullkkey")
         qry = cursor.fetchall()
         print "rows in qry: " + str(len(qry)) + ", time:"
         print datetime.datetime.now().time()
@@ -566,7 +590,7 @@ def iterKcheck(cursor, tableName, k, nullFlag=True):
                     0] + '" AND nullSum = "' + combo[0] + '")')
 
 
-def kkeyUpdate(cursor, tableName, varList, var="kkey"):
+def kkeyUpdate(cursor, table_name, varList, kkey_column_name="kkey"):
     """
     cursor: sqlite cursor object
     tableName: string, name of table
@@ -574,9 +598,10 @@ def kkeyUpdate(cursor, tableName, varList, var="kkey"):
     takes the QI variables identified by varList and concatenates into kkey
     """
     try:
-        varIndex(cursor, tableName, var)
+        index_column(cursor, table_name, kkey_column_name)
     except:
         pass
+
     kkey_formula = "IFNULL("
     if len(varList) == 1:
         kkey_formula = "IFNULL(" + str(varList[0][1]) + ",'NULL')"
@@ -585,9 +610,14 @@ def kkeyUpdate(cursor, tableName, varList, var="kkey"):
             kkey_formula += str(item[1])
             kkey_formula += ",'NULL') || IFNULL("
         kkey_formula += str(varList[-1][1]) + ",'NULL')"
-    # print kkey_formula
-    cursor.execute("UPDATE " + tableName + " SET " + var + " = " + kkey_formula)
-    # print "No column named kkey, could not update" #fix this later
+
+    # TODO Figure out what this is supposed to do. I suspect the use of 'NULL' (a string, rather than NULL) is a bug.
+    cursor.execute(
+        "UPDATE {table_name} SET {kkey_column_name} = ?".format(
+            table_name=table_name,
+            kkey_column_name=kkey_column_name),
+        (kkey_formula,)
+    )
 
 
 def qiPicker(cursor, tableName):
@@ -599,14 +629,15 @@ def qiPicker(cursor, tableName):
     tableInfo = "Pragma table_info(" + tableName + ")"
     cursor.execute(tableInfo)
     columns = cursor.fetchall()
-    qiList = []
+
     print "Please choose the QI variables from the list below:"
     for colNum in range(len(columns)):
-        print str(colNum) + ". " + columns[colNum][1]
+        print "{number}. {column_name}".format(number=colNum, column_name=columns[colNum][1])
     choice = raw_input("Enter your choices by number, separated by commas: ")
-    qiList = choice.split(',')
-    varList = [(int(g), columns[int(g)][1]) for g in qiList]
-    return varList
+
+    selected_columns = choice.split(',')
+    selected_columns = [int(column_index.strip()) for column_index in selected_columns]
+    return [(column_index, columns[column_index][1]) for column_index in selected_columns]
 
 
 def grainSize(cursor, tableName, qiName):
@@ -652,7 +683,7 @@ def isTableKanonymous(cursor, tableName, k):
         cursor.execute("DROP TABLE kacheck")
     except:
         pass
-    cursor.execute("CREATE TABLE kacheck (kkey text, count integer)")
+    cursor.execute("CREATE TABLE kacheck (kkey TEXT, count INTEGER)")
     try:
         cursor.execute("SELECT COUNT(*) FROM " + tableName + " WHERE kCheckFlag = 'False'")
     except:
@@ -660,10 +691,10 @@ def isTableKanonymous(cursor, tableName, k):
     itemCount = cursor.fetchall()[0][0]
     try:
         cursor.execute(
-            "INSERT INTO kacheck SELECT kkey, SUM(Count) FROM " + tableName + " WHERE kCheckFlag = 'False' GROUP BY kkey")
+            "INSERT INTO kacheck SELECT kkey, COUNT(*) FROM " + tableName + " WHERE kCheckFlag = 'False' GROUP BY kkey")
     except:
-        cursor.execute("INSERT INTO kacheck SELECT kkey, SUM(Count) FROM " + tableName + " GROUP BY kkey")
-    cursor.execute("SELECT SUM(Count) FROM kacheck WHERE count < " + str(k))
+        cursor.execute("INSERT INTO kacheck SELECT kkey, COUNT(*) FROM " + tableName + " GROUP BY kkey")
+    cursor.execute("SELECT COUNT(*) FROM kacheck WHERE count < " + str(k))
     ltk = cursor.fetchall()[0][0]
     if ltk != 0:
         return False, float(ltk) / float(itemCount)
@@ -721,26 +752,31 @@ def userKanon(cursor, tableName, userVar, courseVar, k):
     return courseDrops
 
 
-def courseComboUpdate(cursor, tableName, userVar, courseVar):
-    courseQry = selUnique(cursor, tableName, courseVar)
+def courseComboUpdate(cursor, table_name, user_id_column_name, course_id_column_name):
+    courseQry = count_unique_values(cursor, table_name, course_id_column_name)
     courseList = []
     print "generating course list"
     print datetime.datetime.now().time()
     for row in courseQry:
         courseList.append(row[0])
-    userQry = selUnique(cursor, tableName, userVar)
+    userQry = count_unique_values(cursor, table_name, user_id_column_name)
     print "creating/overwriting course_combo"
     print datetime.datetime.now().time()
     try:
-        addColumn(cursor, tableName, "course_combo")
-        varIndex(cursor, tableName, "course_combo")
+        add_column(cursor, table_name, "course_combo")
+        index_column(cursor, table_name, "course_combo")
     except:
-        simpleUpdate(cursor, tableName, "course_combo", "NULL")
+        simpleUpdate(cursor, table_name, "course_combo", "NULL")
     print "no. of unique users to update: " + str(len(userQry))
     print datetime.datetime.now().time()
     count = 1
     for row in userQry:
-        cursor.execute("SELECT " + courseVar + " FROM " + tableName + " WHERE " + userVar + " = '" + row[0] + "'")
+        query = "SELECT {course_id_column_name} FROM {table_name} WHERE {user_id_column_name} = ?".format(
+            course_id_column_name=course_id_column_name,
+            table_name=table_name,
+            user_id_column_name=user_id_column_name
+        )
+        cursor.execute(query, (row[0],))
         subQry = cursor.fetchall()
         qryList = []
         for subRow in subQry:
@@ -751,12 +787,12 @@ def courseComboUpdate(cursor, tableName, userVar, courseVar):
                 courseCombo += "1"
             else:
                 courseCombo += "0"
-        # print "course_combo is: "+courseCombo
-        # print count
-        # count +=1
-        cursor.execute(
-            "UPDATE " + tableName + " SET course_combo = '" + courseCombo + "' WHERE " + userVar + " = '" + row[
-                0] + "'")
+
+        query = "UPDATE {table_name} SET course_combo = ? WHERE {user_id_column_name} = ?".format(
+            table_name=table_name,
+            user_id_column_name=user_id_column_name
+        )
+        cursor.execute(query, (courseCombo, row[0],))
     return courseList
 
 
@@ -770,18 +806,18 @@ def userKCheckTable(cursor, tableName, userVar, records='all'):
         cursor.execute("DROP TABLE userkcheck")
     except:
         pass
-    cursor.execute("CREATE TABLE userkcheck (useridUKC text, course_comboUKC text)")
+    cursor.execute("CREATE TABLE userkcheck (useridUKC TEXT, course_comboUKC TEXT)")
     if records == 'all':
         cursor.execute("INSERT INTO userkcheck SELECT DISTINCT " + userVar + ", course_combo FROM " + tableName)
     else:
         cursor.execute(
             "INSERT INTO userkcheck SELECT DISTINCT " + userVar + ", course_combo FROM " + tableName + " WHERE uniqUserFlag = '" + records + "'")
     try:
-        varIndex(cursor, "userkcheck", "useridUKC")
+        index_column(cursor, "userkcheck", "useridUKC")
     except:
         pass
     try:
-        varIndex(cursor, "userkcheck", "course_comboUKC")
+        index_column(cursor, "userkcheck", "course_comboUKC")
     except:
         pass
 
@@ -834,8 +870,8 @@ def uniqUserFlag(cursor, tableName, uniqueList):
     uniqueList: list, list of unique values of course_combo
     """
     try:
-        addColumn(cursor, tableName, "uniqUserFlag")
-        varIndex(cursor, tableName, "uniqUserFlag")
+        add_column(cursor, tableName, "uniqUserFlag")
+        index_column(cursor, tableName, "uniqUserFlag")
         simpleUpdate(cursor, tableName, "uniqUserFlag", "False")
     except:
         simpleUpdate(cursor, tableName, "uniqUserFlag", "False")
@@ -899,11 +935,11 @@ def optimumDrop(cursor, tableName, userVar, k, nonUniqueList, nComb=1):
             postList.append((newString, j[1]))
         try:
             cursor.execute("DROP TABLE coursedrop")
-            cursor.execute("CREATE TABLE coursedrop (course_combo text, Count integer)")
+            cursor.execute("CREATE TABLE coursedrop (course_combo TEXT, Count INTEGER)")
         except:
-            cursor.execute("CREATE TABLE coursedrop (course_combo text, Count integer)")
+            cursor.execute("CREATE TABLE coursedrop (course_combo TEXT, Count INTEGER)")
         cursor.executemany("INSERT INTO coursedrop VALUES (?,?)", postList)
-        cursor.execute("SELECT course_combo, SUM(Count) FROM coursedrop GROUP BY course_combo")
+        cursor.execute("SELECT course_combo, COUNT(*) FROM coursedrop GROUP BY course_combo")
         postQry = cursor.fetchall()
         postEntropy = shannonEntropy(postQry)
         postCount = 0
@@ -948,7 +984,7 @@ def courseDropper(cursor, tableName, courseVar, courseName, changeVals, courseDi
     delCount = 0
     for val in changeVals:
         cursor.execute(
-            "SELECT SUM(Count) FROM " + tableName + " WHERE (" + courseVar + " = '" + courseName + "' AND uniqUserFlag = 'True' AND course_combo = '" + val + "')")
+            "SELECT COUNT(*) FROM " + tableName + " WHERE (" + courseVar + " = '" + courseName + "' AND uniqUserFlag = 'True' AND course_combo = '" + val + "')")
         qry = cursor.fetchall()
         if (qry[0][0]):
             delCount += qry[0][0]
@@ -1012,13 +1048,13 @@ def dataUpdate(cursor, tableName, varName, catMap, newVar=False, newVarName=''):
     newVarName: if newVar==True, must provide name of target variable
     """
     try:
-        varIndex(cursor, tableName, varName)
+        index_column(cursor, tableName, varName)
     except:
         pass
     count = 0
     if newVar:
         try:
-            varIndex(cursor, tableName, newVarName)
+            index_column(cursor, tableName, newVarName)
         except:
             pass
         for cat in catMap:
